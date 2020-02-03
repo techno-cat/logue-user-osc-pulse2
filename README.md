@@ -1,5 +1,6 @@
 # pulse2
-Waveform is pulse only, dual osc module for NTS-1.
+Waveform is pulse only, dual osc module for NTS-1,  
+can use as `USER OSCILLATORS`.
 
 # Parameters
 - shape (NTS-1: A, other: Shape)  
