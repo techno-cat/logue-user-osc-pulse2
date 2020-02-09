@@ -65,64 +65,71 @@ __fast_inline int32_t pitchLimitter(int32_t pitch)
 #endif
 }
 
+// テーブル選択
+__fast_inline int32_t mySelectTable(
+  const LCWOscWaveSource *src, int32_t pitch)
+{
+  pitch += LCW_SQ7_24(LCW_OSC_SHORT_CUT_LUT_OFFSET);
+  if ( pitch < 0 ) {
+    return src->shortCutTable[0];
+  }
+
+  const int32_t i = pitch >> (24 - 7); // = 整数部 / 128
+  return ( LCW_OSC_SHORT_CUT_TABLE_SIZE <= i )
+    ? 0
+    : src->shortCutTable[i];
+}
+
 #define LCW_AA_NYQUIST_PITCH (5224) // = 5.1 * 2^10, 2^5.1 * 440 = 15090(Hz)
 // pitch : s7.24, return : s.22
-__fast_inline int32_t myLookUp(uint32_t t, int32_t pitch)
+__fast_inline int32_t myLookUp(
+  const LCWOscWaveSource *src, uint32_t t, int32_t pitch, int32_t i)
 {
-    const LCWOscWaveSource *src = &gLcwOscPulseSource;
+  // AAテーブルを参照するための添字に加工
+  const int32_t j0 = (pitch >> (24 - LCW_AA_TABLE_BITS)) - LCW_AA_PITCH_OFFSET;
+  // 10bit線形補間の準備
+  const uint32_t t0 = t >> (LCW_OSC_TIMER_BITS - (LCW_OSC_TABLE_BITS + 10));
 
-    // AAテーブルを参照するための添字に加工
-    const int32_t j0 = (pitch >> (24 - LCW_AA_TABLE_BITS)) - LCW_AA_PITCH_OFFSET;
-    // 8bit線形補間の準備
-    const uint32_t t0 = t >> (LCW_OSC_TIMER_BITS - (LCW_OSC_TABLE_BITS + 8));
-    
-    // テーブル選択
-    int32_t scSrc = pitch + LCW_SQ7_24(LCW_OSC_SHORT_CUT_LUT_OFFSET);
-    int32_t scIdx = ( scSrc < 0 ) ? 0 : (scSrc >> (24 - 7));
-    int32_t i = (LCW_OSC_SHORT_CUT_TABLE_SIZE <= scIdx)
-      ? 0
-      : src->shortCutTable[scIdx];
+  int64_t out = 0;
+  {
+    const int16_t *p = src->tables[i];
 
-    int64_t out = 0;
-    {
-      const int16_t *p = src->tables[i];
+    int32_t j = ( j0 < 0 ) ? 0 : j0;
+    if ( LCW_AA_TABLE_SIZE <= j ) {
+      j = LCW_AA_TABLE_SIZE - 1;
+    }
 
-      int32_t j = ( j0 < 0 ) ? 0 : j0;
-      if ( LCW_AA_TABLE_SIZE <= j ) {
-        j = LCW_AA_TABLE_SIZE - 1;
-      }
+    int32_t gain = gLcwAntiAiliasingTable[j];
+    uint32_t t1 = t0 >> 10;
+    uint32_t t2 = (t1 + 1) & LCW_OSC_TABLE_MASK;
 
-      int32_t gain = gLcwAntiAiliasingTable[j];
-      uint32_t t1 = t0 >> 8;
+    int32_t ratio = t0 & 0x3FF;
+    int32_t val = (p[t1] * ratio) + (p[t2] * (0x400 - ratio));
+    out += ( (int64_t)val * gain );
+  }
+
+  const LCWOscWaveOption *options = src->subTables[i];
+  for (int32_t k=0; k<LCW_OSC_SUB_TABLE_SIZE; k++) {
+    const int16_t *p = src->tables[0]; // sin wave
+    const LCWOscWaveOption *option = options + k;
+#if(1)
+    // memo: pitchの小数部はAAテーブルのサイズに合わせてある
+    int32_t j = j0 + option->pitch;
+    if ( j < (LCW_AA_NYQUIST_PITCH - LCW_AA_PITCH_OFFSET) ) {
+      j = ( j < 0 ) ? 0 : j;
+      int32_t gain = (gLcwAntiAiliasingTable[j] * option->gain) >> 14;
+      uint32_t tt = t0 * option->fn;
+      uint32_t t1 = (tt >> 10) & LCW_OSC_TABLE_MASK;
       uint32_t t2 = (t1 + 1) & LCW_OSC_TABLE_MASK;
 
-      int32_t ratio = t0 & 0xFF;
-      int32_t val = (p[t1] * ratio) + (p[t2] * (0x100 - ratio));
+      int32_t ratio = tt & 0x3FF;
+      int32_t val = (p[t1] * ratio) + (p[t2] * (0x400 - ratio));
       out += ( (int64_t)val * gain );
     }
-
-    const LCWOscWaveOption *options = src->subTables[i];
-    for (int32_t k=0; k<LCW_OSC_SUB_TABLE_SIZE; k++) {
-      const int16_t *p = src->tables[0]; // sin wave
-      const LCWOscWaveOption *option = options + k;
-#if(1)
-      // memo: pitchの小数部はAAテーブルのサイズに合わせてある
-      int32_t j = j0 + option->pitch;
-      if ( j < (LCW_AA_NYQUIST_PITCH - LCW_AA_PITCH_OFFSET) ) {
-        j = ( j < 0 ) ? 0 : j;
-        int32_t gain = (gLcwAntiAiliasingTable[j] * option->gain) >> 14;
-        uint32_t tt = t0 * option->fn;
-        uint32_t t1 = (tt >> 8) & LCW_OSC_TABLE_MASK;
-        uint32_t t2 = (t1 + 1) & LCW_OSC_TABLE_MASK;
-
-        int32_t ratio = tt & 0xFF;
-        int32_t val = (p[t1] * ratio) + (p[t2] * (0x100 - ratio));
-        out += ( (int64_t)val * gain );
-      }
 #endif
-    }
+  }
 
-    return (int32_t)( out >> LCW_AA_VALUE_BITS );
+  return (int32_t)( out >> (LCW_AA_VALUE_BITS + 2) );
 }
 
 void OSC_INIT(uint32_t platform, uint32_t api)
@@ -166,10 +173,13 @@ void OSC_CYCLE(const user_osc_param_t * const params,
   const int32_t subVol = (int32_t)(0x100 * s_param.shiftshape);
   const int32_t mainVol = 0x100 - subVol;
 
+  const LCWOscWaveSource *src = &gLcwOscPulseSource;
   for (; y != y_e; ) {
     // s.22
-    int32_t out1 = myLookUp( t1, pitch1 );
-    int32_t out2 = myLookUp( t2, pitch2 );
+    int32_t out1 = myLookUp(
+      src, t1, pitch1, mySelectTable(src, pitch1) );
+    int32_t out2 = myLookUp(
+      src, t2, pitch2, mySelectTable(src, pitch2) );
 
     // s.22 -> s.30
     int32_t out = (out1 * mainVol) + (out2 * subVol);
