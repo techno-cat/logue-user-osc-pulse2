@@ -81,7 +81,7 @@ __fast_inline int32_t mySelectTable(
 }
 
 #define LCW_AA_NYQUIST_PITCH (5224) // = 5.1 * 2^10, 2^5.1 * 440 = 15090(Hz)
-// pitch : s7.24, return : s.22
+// pitch : s7.24, return : SQ.22
 __fast_inline int32_t myLookUp(
   const LCWOscWaveSource *src, uint32_t t, int32_t pitch, int32_t i)
 {
@@ -90,7 +90,7 @@ __fast_inline int32_t myLookUp(
   // 10bit線形補間の準備
   const uint32_t t0 = t >> (LCW_OSC_TIMER_BITS - (LCW_OSC_TABLE_BITS + 10));
 
-  int64_t out = 0;
+  int64_t out = 0; // = SQ.25 x AA
   {
     const int16_t *p = src->tables[i];
 
@@ -117,7 +117,7 @@ __fast_inline int32_t myLookUp(
     int32_t j = j0 + option->pitch;
     if ( j < (LCW_AA_NYQUIST_PITCH - LCW_AA_PITCH_OFFSET) ) {
       j = ( j < 0 ) ? 0 : j;
-      int32_t gain = (gLcwAntiAiliasingTable[j] * option->gain) >> 14;
+      int32_t gain = (gLcwAntiAiliasingTable[j] * option->gain) >> LCW_OSC_SUB_TABLE_GAIN_BITS;
       uint32_t tt = t0 * option->fn;
       uint32_t t1 = (tt >> 10) & LCW_OSC_TABLE_MASK;
       uint32_t t2 = (t1 + 1) & LCW_OSC_TABLE_MASK;
@@ -129,7 +129,7 @@ __fast_inline int32_t myLookUp(
 #endif
   }
 
-  return (int32_t)( out >> (LCW_AA_VALUE_BITS + 2) );
+  return (int32_t)( out >> (LCW_AA_VALUE_BITS + (25 - 22)) );
 }
 
 void OSC_INIT(uint32_t platform, uint32_t api)
@@ -175,17 +175,16 @@ void OSC_CYCLE(const user_osc_param_t * const params,
 
   const LCWOscWaveSource *src = &gLcwOscPulseSource;
   for (; y != y_e; ) {
-    // s.22
+    // q22
     int32_t out1 = myLookUp(
       src, t1, pitch1, mySelectTable(src, pitch1) );
     int32_t out2 = myLookUp(
       src, t2, pitch2, mySelectTable(src, pitch2) );
 
-    // s.22 -> s.30
+    // q22 -> q30
     int32_t out = (out1 * mainVol) + (out2 * subVol);
-    out = (out >> 6) * 63;
 
-    // s7.28 -> q31
+    // q30 -> q31
     *(y++) = (q31_t)(out << (31 - 30));
 
     // input: s7.24 -> s15.16
